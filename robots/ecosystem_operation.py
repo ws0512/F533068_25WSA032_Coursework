@@ -27,6 +27,8 @@ es.debug = False                                                                
 es.messages_on = False                                                          # over 52 weeks it is wise to turn messages off as there are too many. But when researching turn on for shorter runs
 es.duration = "1 week"                                                          # We are aiming to run for a year with minimum or no bot breakages
 
+print("ECOFACTORY REGISTRY: \t", es._registry)
+
 home = [40,20, 0]                                                               # Place to which bots will return when idle and from which they will start. This is also the location of the charger in this example, but it doesn't have to be. You can change this and the charger location to test the bots' ability to navigate around the ecosystem.
 charge_threshold = 0.20                                                         # this is the soc percentage at which bots will decide to charge. This can be optimised and varied for each kind (see stretch objective)                               
 
