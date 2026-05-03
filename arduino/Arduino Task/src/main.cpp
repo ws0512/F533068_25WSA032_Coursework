@@ -1,22 +1,84 @@
 #include "pins_arduino.h"
 #include <Arduino.h>
 
-const int B = 4275000; // B value of the thermistor
-const int R0 = 100000; // R0 = 100k
-const int pinTempSensor = A0; // Temperature sensor pin 
+#define p Serial.print
+#define P Serial.println
 
-int N_tBuffer = 32;  // default size of the temp buffer; 
+
+const long B = 4250; // B value of the thermistor
+const long R0 = 100; // R0 = 100k
+const int pinTempSensor = A0; // Temperature sensor pin 
+const unsigned long CYCLE_TIME_MS = 60000UL;
+const int HISTORY_SIZE = 10;
+const float MIN_SAMPLE_RATE = 0.5f;
+const float MAX_SAMPLE_RATE = 4.0f;
+const float STABLE_THRESHOLD = 0.5f;
+
+bool DEBUG_MODE = true;
+
+enum POWER_MODE {
+  ACTIVE_MODE,
+  IDLE_MODE,
+  POWER_DOWN_MODE
+};
+
+int N_tBuffer = 256;  // default size of the temp buffer; 
 float* tempBuffer; 
 int N_index = 0;
+int samplescount = 0;
+float sampleRate = 1; // active mode = 1Hz
+int mode = ACTIVE_MODE;
+int stableCycles = 0;
+float variationHistory[HISTORY_SIZE];
+int historyCount = 0;
+
+struct frequencyDomainSample {
+  float real;
+  float imaginary;
+  float magnitude;
+  float frequency;
+  int k;
+};
+frequencyDomainSample* freqdomain;
+
 
 // put function declarations here:
 int myFunction(int, int);
 
+void collect_temperature_data();
+void send_data_to_pc(float* dft);
+POWER_MODE decide_power_mode(float totalVariation, float predictedVariation);
+void update_sample_rate(float dominantFreq);
+
 void initTempBuffer() {
+  P("init temp buffer start");
   tempBuffer = (float*) malloc(N_tBuffer * sizeof(float)); // allocate dynamic size of the buffer used for temperature
-  
+  P("past malloc");
+  N_index = 0;
   for (int i = 0; i< N_tBuffer; i++) {  // set all values in the buffer the a set value to ensure that there is no randum values
     tempBuffer[i] = 0.0f;
+    delay(20);
+    p(".");
+  }
+  P("return of the wolf");
+  return;
+}
+
+template<typename T>
+void printBuffer(void *buffer, int index, int max_size) {
+  int NLafterX = 10;
+  T* typedbuffer = (T*) buffer;
+  for(int i = 0; i < max_size; i++) {
+    (i == index) ? [i, typedbuffer](){p("\033[32m"); p(typedbuffer[i]); p("\033[0m");}() : [i, typedbuffer](){p(typedbuffer[i]);}(); // adding green text colour for the latest added value
+    ((i+1) % NLafterX == 0 ) ? Serial.print("\n"): Serial.print("\t");
+  }
+}
+
+void appendToBuffer(void *buffer, int *index, int max_size, void *value, int element_size) {
+  if (*index < max_size) {
+    char *byte_buffer = (char *)buffer;
+    memcpy(byte_buffer + (*index * element_size), value, element_size);
+    (*index)++;
   }
 }
 
@@ -44,41 +106,234 @@ void changeSizeOfTempBuffer(int newIndexSize) {
   }
 }
 
-void setup() {
-  Serial.begin(9600);
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
-  Serial.println(result);
+void wipeTempBuffer() {
+  for (int i = 0; i < N_tBuffer; i++) {
+    tempBuffer[i] = 0.0f;
+    N_index = 0;
+    samplescount = 0;
+    p(tempBuffer[i]);
+  }
+}
 
-  initTempBuffer();
+float calculate_variation(float data[], int N) {
+  float total = 0.0f;
+  
+  for (int i = 1; i < N; i++) {
+    total += fabs(data[i] - data[i - 1]);
+  }
+  p("VARIATION: "); p(N); P(total, 3);
+  return total;
+}
+
+float moving_average(float newValue) {
+  if (historyCount < HISTORY_SIZE) {
+    variationHistory[historyCount++] = newValue;
+  } else {
+    for (int i = 1; i < HISTORY_SIZE; i++) {
+      variationHistory[i-1] = variationHistory[i];
+    }
+    variationHistory[HISTORY_SIZE-1] = newValue;
+  }
+
+  float sum = 0.0f;
+
+  for (int i = 0; i < historyCount; i++) {
+    sum += variationHistory[i];
+  }
+
+  return sum / historyCount;
+}
+
+float* apply_dft(float data[], int N, float sample_Rate) {
+  float maxMagnitude = 0.0f;
+  float *dominantFrequency = (float*) malloc(sizeof(float));
+
+  freqdomain = (frequencyDomainSample*) malloc(sizeof(frequencyDomainSample)*(N/2));
+
+
+  /* loop through each frequency bin
+   * k=1 skips DC component
+   * N/2 is enough due to mirrored spectrum
+   */ 
+  for (int k = 1; k < N/2; k++) {
+    float real = 0.0f;
+    float imaginary = 0.0f;
+
+    // sum all samples
+    for (int n = 0; n < N; n++) {
+      // 2PIkn/N is the power of e without j
+      float angle = (2.0f * PI * k * n) / N;
+      real += data[ (N_index - samplescount + n + N_tBuffer ) % N_tBuffer ] * cos(angle);
+      imaginary -= data[ ( N_index - samplescount + n + N_tBuffer ) % N_tBuffer ] * sin(angle);
+      //P(angle);
+    }
+    //p("real: ");
+    //P(real);
+    //p("imaginary: ");
+    //P(imaginary);
+
+    //measures and compares if it is the biggest peak
+    float magnitude = sqrt((real * real) + (imaginary * imaginary));
+    p("\nk: ");p(k);p("\tmagnitude calculated: ");p(magnitude);p("\n");
+
+    freqdomain[k-1] = {.real = real, .imaginary = imaginary, .magnitude = magnitude, .frequency = (k*sample_Rate)/N, .k = k}; // add frequency domain index into buffer. 
+ 
+    if (magnitude > maxMagnitude) {
+      p("Max found: k: ");p(k);p(" magnitude: ");p(magnitude);p(" sampleRate: ");p(sample_Rate);p(" N: ");p(N);//p(" Previous Dominant: ");P(*dominantFrequency);
+      maxMagnitude = magnitude;
+      *dominantFrequency = (k * sample_Rate) / N ;
+    }
+
+  }
+  return dominantFrequency;
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1500);
+
+  p("int is x bytes: ");
+  P(sizeof(int)); // 16 bit
+  p("long is x bytes: ");
+  P(sizeof(long)); // 32 bit
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
   Serial.println("Hi!");
-  int a = analogRead(A0);
 
-  float temperature = 1.0/(log(((1023.0/a-1.0)*R0)/R0)/B+1/298.15)-273.15;
-  tempBuffer[N_index] = temperature;
+  p("millis: ");
+  P(millis());
+  N_tBuffer = ceil( ((!DEBUG_MODE) ? 1.2 : 0.55) * 60*sampleRate) + 1; // 1.2 minutes of samples size of buffer or ~35 sec if running in debug mode
+  P(N_tBuffer);
+  initTempBuffer();
   
-  for(int i = 0; i < N_tBuffer; i++) { // print whole buffer (order independant)
-    (i == N_index) ? [i](){Serial.print("\033[32m"); Serial.print(tempBuffer[i]); Serial.print("\033[0m");}() : [i](){Serial.print(tempBuffer[i]);}(); // adding green text colour for the latest added value
-    ( (i+1) % 5  == 0 ) ? Serial.print("\n"): Serial.print("\t");
+  collect_temperature_data(); //collect one minute of sample data
+
+  float variation = calculate_variation(tempBuffer, samplescount); //calcuaate the variation 
+
+  float predicted = moving_average(variation); // get predicted value from variation
+
+  float *dft = apply_dft(tempBuffer, samplescount, sampleRate ); // apply dft to the collected sample data
+  
+  if(DEBUG_MODE) {
+    p("dft value");
+    p(*dft);
+    p("\tvariation: ");
+    p(variation);
+    p("\tpredicted: ");
+    P(predicted);
   }
 
-  N_index = (N_index + 1) % N_tBuffer; // Number of the next index in the ring buffer
-  
-  Serial.print("\ntemperature = ");
-  Serial.println(temperature);
+  mode = decide_power_mode(variation, predicted);
 
-  /*if (temperature > 25.70f) {
-    changeSizeOfTempBuffer(16);
-  }*/
-  
-  delay(2000);
+  update_sample_rate(*dft);
+
+  send_data_to_pc(dft);
+
+  free(tempBuffer);
+  free(freqdomain);
+  free(dft);
+  delay(100); // delay the function a second after finnishing processing
 }
-
+  
 // put function definitions here:
 int myFunction(int x, int y) {
   return x + y;
+}
+
+void collect_temperature_data() {
+  P("Collecting Temperature '_'");
+  samplescount = 0;
+  for (int i = 0; i< ceil(((!DEBUG_MODE) ? 1 : 0.5)*60*sampleRate); i++) { // 1 minute of samples 
+    long tempStart = millis();
+    long a = analogRead(pinTempSensor);
+    float temperature = 1.0 / (log((R0 * (1023.0 / a - 1.0) ) / R0) / B + 1.0 / 298.15) - 273.15;
+    
+    //p("\ntemperature = ");
+    //P(temperature);
+    appendToBuffer(tempBuffer, &N_index, N_tBuffer, &temperature, sizeof(float));
+    (samplescount < N_tBuffer) ? samplescount++ : samplescount;
+    long time = ( 1000/sampleRate ) - millis() + tempStart;
+    /*p("delay time: ");
+    P(time);
+    p("RAW TEMPERATURE: ");
+    P(a);*/
+    p("#");
+    delay(time); // delay set to the samplerate - time it took to calculate and append data.
+  }
+  
+  printBuffer<float>(tempBuffer, N_index-1, N_tBuffer);
+  return;
+}
+
+void send_data_to_pc(float* dft) {
+  P("Time\t\tTemperature\tfrequency\tmagnitude");
+  for(int i = 0; i< samplescount; i++) {
+
+    // --- Time and temperature data --
+    p(i/sampleRate, 3); //TIME TO 3 DP
+    p(",\t");
+    p(tempBuffer[(N_index - samplescount + i + N_tBuffer) % N_tBuffer], 3);
+    p(",\t\t");
+     // --- frequency and magnitude 
+    if (i < samplescount / 2 - 1) { 
+      p(freqdomain[i].frequency, 4);
+      p(",\t\t");
+      p(freqdomain[i].magnitude, 4);
+      P("");
+    }
+    else {
+      P("");
+    }
+  }
+  p("Dominant Frequency: "); P(*dft, 3);
+  p("stablecount: "); P(stableCycles);
+  p("variation History: ");
+  for( float val : variationHistory) {
+    p(val, 3);p("\t");
+  }
+  P();
+  p("Mode: "); P(mode);
+  p("SAMPLE_RATE: ");P(sampleRate);
+  P("END OF DATA TRANSMISSION");
+  return;
+}
+
+POWER_MODE decide_power_mode(float totalVariation, float predictedVariation) {
+  // if sudden spike or higher then theshold then sswitch to active mode
+  if (totalVariation > STABLE_THRESHOLD * 2.0f) {
+    P("TATAL  TRIGGERRED");
+    stableCycles = 0;
+    return ACTIVE_MODE;
+  }
+  if (predictedVariation > STABLE_THRESHOLD) {
+    P("PREDICTED TRIGGERED");
+    stableCycles = 0;
+    return ACTIVE_MODE;
+  }
+
+  stableCycles++;
+
+  if (stableCycles >= 5) { // if the temperature has been stable for more than 5 cycles then switch to POWER_DOWN_MODE
+    return POWER_DOWN_MODE;
+  }
+
+  return IDLE_MODE;
+}
+
+void update_sample_rate(float dominantFreq) {
+  float target = dominantFreq * 2.0f;
+  if (variationHistory[0] > 1) target += 0.5;
+
+  if (target < MIN_SAMPLE_RATE) target = MIN_SAMPLE_RATE;
+  if (target > MAX_SAMPLE_RATE) target = MAX_SAMPLE_RATE;
+
+  // smooth decrease if the target is lower than the samplerate
+  if (target < sampleRate) {
+    sampleRate -= 0.25f;
+    if (sampleRate < target) sampleRate = target;
+  } else {
+    sampleRate = target;
+  }
 }
