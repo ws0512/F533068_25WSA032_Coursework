@@ -36,7 +36,7 @@ def dft(signal, fs):
 
     magnitude = np.abs(X)
 
-    return np.column_stack((freqs, magnitude))
+    return np.column_stack((freqs[:N//2], magnitude[:N//2])) # N//2 to ignore the mirrored frequencies
 
 
 def moving_average(data, window_size):

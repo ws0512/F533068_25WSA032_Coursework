@@ -15,9 +15,9 @@ const unsigned long CYCLE_TIME_MS = 60000UL;
 const int HISTORY_SIZE = 10;
 const float MIN_SAMPLE_RATE = 0.5f;
 const float MAX_SAMPLE_RATE = 4.0f;
-const float STABLE_THRESHOLD = 0.5f;
+const float STABLE_THRESHOLD = 0.65f;
 
-bool DEBUG_MODE = true;
+bool DEBUG_MODE = false;
 
 enum POWER_MODE {
   ACTIVE_MODE,
@@ -25,12 +25,9 @@ enum POWER_MODE {
   POWER_DOWN_MODE
 };
 
-int N_tBuffer = 256;  // default size of the temp buffer; 
+long N_tBuffer = 256;  // default size of the temp buffer; 
 float* tempBuffer; 
-// pointer to a float buffer that has memory allocated dynamically to ensure that 
-// the right ammount of sample indexes are in the buffer for the sample rate 
-// during that cycle
-int N_index = 0;
+long N_index = 0;
 int samplescount = 0;
 float sampleRate = 1; // active mode = 1Hz
 int mode = ACTIVE_MODE;
@@ -57,16 +54,13 @@ POWER_MODE decide_power_mode(float totalVariation, float predictedVariation);
 void update_sample_rate(float dominantFreq);
 
 void initTempBuffer() {
-  P("init temp buffer start");
   tempBuffer = (float*) malloc(N_tBuffer * sizeof(float)); // allocate dynamic size of the buffer used for temperature
-  P("past malloc");
   N_index = 0;
   for (int i = 0; i< N_tBuffer; i++) {  // set all values in the buffer the a set value to ensure that there is no randum values
     tempBuffer[i] = 0.0f;
     delay(20);
     p(".");
   }
-  P("return of the wolf");
   return;
 }
 
@@ -80,7 +74,7 @@ void printBuffer(void *buffer, int index, int max_size) {
   }
 }
 
-void appendToBuffer(void *buffer, int *index, int max_size, void *value, int element_size) {
+void appendToBuffer(void *buffer, long *index, long max_size, void *value, int element_size) {
   if (*index < max_size) {
     char *byte_buffer = (char *)buffer;
     memcpy(byte_buffer + (*index * element_size), value, element_size);
@@ -127,7 +121,7 @@ float calculate_variation(float data[], int N) {
   for (int i = 1; i < N; i++) {
     total += fabs(data[i] - data[i - 1]);
   }
-  p("VARIATION: "); p(N); P(total, 3);
+  p("VARIATION: "); P(total, 3);
   return total;
 }
 
@@ -180,12 +174,12 @@ float* apply_dft(float data[], int N, float sample_Rate) {
 
     //measures and compares if it is the biggest peak
     float magnitude = sqrt((real * real) + (imaginary * imaginary));
-    p("\nk: ");p(k);p("\tmagnitude calculated: ");p(magnitude);p("\n");
+    //p("\nk: ");p(k);p("\tmagnitude calculated: ");p(magnitude);p("\n");
 
     freqdomain[k-1] = {.real = real, .imaginary = imaginary, .magnitude = magnitude, .frequency = (k*sample_Rate)/N, .k = k}; // add frequency domain index into buffer. 
  
-    if (magnitude > maxMagnitude) {
-      p("Max found: k: ");p(k);p(" magnitude: ");p(magnitude);p(" sampleRate: ");p(sample_Rate);p(" N: ");p(N);//p(" Previous Dominant: ");P(*dominantFrequency);
+    if (magnitude > maxMagnitude && k!=0) {
+      //p("Max found: k: ");p(k);p(" magnitude: ");p(magnitude);p(" sampleRate: ");p(sample_Rate);p(" N: ");p(N);//p(" Previous Dominant: ");P(*dominantFrequency);
       maxMagnitude = magnitude;
       *dominantFrequency = (k * sample_Rate) / N ;
     }
@@ -206,12 +200,12 @@ void setup() {
 
 void loop() {
   // put your main code here, to run repeatedly:
-  Serial.println("Hi!");
+  //Serial.println("Hi!");
 
-  p("millis: ");
-  P(millis());
+  //p("millis: ");
+  //P(millis());
   N_tBuffer = ceil( ((!DEBUG_MODE) ? 1.2 : 0.55) * 60*sampleRate) + 1; // 1.2 minutes of samples size of buffer or ~35 sec if running in debug mode
-  P(N_tBuffer);
+  //P(N_tBuffer);
   initTempBuffer();
   
   collect_temperature_data(); //collect one minute of sample data
@@ -250,14 +244,16 @@ int myFunction(int x, int y) {
 
 void collect_temperature_data() {
   P("Collecting Temperature '_'");
+  unsigned long temp_time_start = millis();
   samplescount = 0;
+  //P("Time(ms),Temperature(oC)");
   for (int i = 0; i< ceil(((!DEBUG_MODE) ? 1 : 0.5)*60*sampleRate); i++) { // 1 minute of samples 
     long tempStart = millis();
     long a = analogRead(pinTempSensor);
     float temperature = 1.0 / (log((R0 * (1023.0 / a - 1.0) ) / R0) / B + 1.0 / 298.15) - 273.15;
     
-    //p("\ntemperature = ");
-    //P(temperature);
+    //p((millis()-temp_time_start));p(",");P(temperature);
+    p("#");
     appendToBuffer(tempBuffer, &N_index, N_tBuffer, &temperature, sizeof(float));
     (samplescount < N_tBuffer) ? samplescount++ : samplescount;
     long time = ( 1000/sampleRate ) - millis() + tempStart;
@@ -265,11 +261,11 @@ void collect_temperature_data() {
     P(time);
     p("RAW TEMPERATURE: ");
     P(a);*/
-    p("#");
+    //p("#");
     delay(time); // delay set to the samplerate - time it took to calculate and append data.
   }
-  
-  printBuffer<float>(tempBuffer, N_index-1, N_tBuffer);
+  P("--END OF COLLECTING TEMPERATURE--");
+  //printBuffer<float>(tempBuffer, N_index-1, N_tBuffer);
   return;
 }
 
@@ -302,14 +298,14 @@ void send_data_to_pc(float* dft) {
   P();
   p("Mode: "); P(mode);
   p("SAMPLE_RATE: ");P(sampleRate);
-  P("END OF DATA TRANSMISSION");
+  P("---END OF DATA TRANSMISSION---");
   return;
 }
 
 POWER_MODE decide_power_mode(float totalVariation, float predictedVariation) {
   // if sudden spike or higher then theshold then sswitch to active mode
   if (totalVariation > STABLE_THRESHOLD * 2.0f) {
-    P("TATAL  TRIGGERRED");
+    p("TATAL  TRIGGERRED total: ");p(totalVariation, 3);p("\tpredicted: ");P(predictedVariation);
     stableCycles = 0;
     return ACTIVE_MODE;
   }
@@ -320,7 +316,7 @@ POWER_MODE decide_power_mode(float totalVariation, float predictedVariation) {
   }
 
   stableCycles++;
-
+  P("neither triggered");
   if (stableCycles >= 5) { // if the temperature has been stable for more than 5 cycles then switch to POWER_DOWN_MODE
     return POWER_DOWN_MODE;
   }
