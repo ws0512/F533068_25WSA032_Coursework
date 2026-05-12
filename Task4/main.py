@@ -4,8 +4,9 @@ import pandas as pd;
 import os;
 import math;
 import tkinter as tk;
+import re
 
-if os.path.exists("out.txt"):
+'''if os.path.exists("out.txt"):
     with open("out.txt","r") as f:
         if os.path.exists("out.csv"):
             os.remove("out.csv");
@@ -18,8 +19,105 @@ if os.path.exists("out.txt"):
         TimeTempData = pd.read_csv("out.csv"); # for every line in f, yield the line if it doesnt start with "--- "
 else :
     print("out.txt doesnt exist please connect the arduino board and run the main.cpp with `pio device monitor --baud 115200 > out.txt` to generate the file")
+'''
+
+
+
+
+## use the sample data taken from the dynamic arduino code and stitch together time stamps to continously increase rather than jump from 59 seconds to 0.0 seconds. 
+## output that data to out2.csv and import it back into pandas
+
+OUTPUT_CSV = "out2.csv"
+
+continuous_data = []
+
+if os.path.exists("samples.txt"):
+
+    collecting = False
+
+    global_offset = 0.0
+
+    prev_local_time = None
+    prev_dt = 0.0
+
+    last_continuous_time = 0.0
+
+    with open("samples.txt", "r") as f:
+
+        for raw_line in f:
+
+            line = raw_line.strip()
+
+            # start of time-domain table
+            if line.startswith("Time") and "Temperature" in line:
+
+                collecting = True
+                prev_local_time = None
+                continue
+
+            # end of table
+            if line.startswith("Dominant Frequency"):
+
+                collecting = False
+
+                # next block starts after previous sample spacing
+                global_offset = last_continuous_time + prev_dt
+
+                continue
+
+            if not collecting:
+                continue
+
+            match = re.match(
+                r'^\s*([\d.]+),\s*([\d.]+)',
+                line
+            )
+
+            if match:
+
+                local_time = float(match.group(1))
+                temp = float(match.group(2))
+
+                if prev_local_time is not None:
+                    prev_dt = local_time - prev_local_time
+
+                continuous_time = global_offset + local_time
+
+                if continuous_time > 180.0: # up to 3 min
+                    break
+
+                last_continuous_time = continuous_time
+
+                continuous_data.append([
+                    continuous_time,
+                    temp
+                ])
+
+                prev_local_time = local_time
+
+    df = pd.DataFrame(
+        continuous_data,
+        columns=["Time(s)", "Temperature(oC)"]
+    )
+
+    df.to_csv(OUTPUT_CSV, index=False)
+
+    TimeTempData = pd.read_csv(OUTPUT_CSV)
+
+    print(TimeTempData)
+
+else:
+    print("out.txt does not exist")
 
 print(TimeTempData);
+
+
+
+
+
+
+
+
 
 
 def dft(signal, fs):
@@ -100,6 +198,23 @@ def rate_Plot5():
     plt.ylabel("Change (dy)")
     plt.title("Plot 5: Temperature Change Rate vs Time");
     plt.show();
+
+print("tkinter")
+
+## error note
+'''Authorization required, but no authorization protocol specified
+
+Authorization required, but no authorization protocol specified
+
+Traceback (most recent call last):
+  File "/home/CrackHead/Documents/F533068_25WSA032_Coursework/Task4/main.py", line 199, in <module>
+    root = tk.Tk();
+  File "/usr/lib/python3.14/tkinter/__init__.py", line 2484, in __init__
+    self.tk = _tkinter.create(screenName, baseName, className, interactive, wantobjects, useTk, sync, use)
+              ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_tkinter.TclError: couldn't connect to display ":0" '''
+
+
 
 root = tk.Tk();
 tk.Button(root, text="Plot 1: Temperature vs Time", command=lambda:[plt.close('all'),time_temperatureplot1()]).pack();

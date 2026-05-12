@@ -8,7 +8,7 @@
 #define P Serial.println
 
 
-const long B = 4250; // B value of the thermistor
+const long B = 4750; // B value of the thermistor
 const long R0 = 100; // R0 = 100k
 const int pinTempSensor = A0; // Temperature sensor pin 
 const unsigned long CYCLE_TIME_MS = 60000UL;
@@ -30,6 +30,7 @@ float* tempBuffer;
 long N_index = 0;
 int samplescount = 0;
 float sampleRate = 1; // active mode = 1Hz
+float oldSampleRate = 1;
 int mode = ACTIVE_MODE;
 int stableCycles = 0;
 float variationHistory[HISTORY_SIZE];
@@ -234,6 +235,7 @@ void loop() {
   free(tempBuffer);
   free(freqdomain);
   free(dft);
+  oldSampleRate = sampleRate;
   delay(100); // delay the function a second after finnishing processing
 }
   
@@ -274,7 +276,7 @@ void send_data_to_pc(float* dft) {
   for(int i = 0; i< samplescount; i++) {
 
     // --- Time and temperature data --
-    p(i/sampleRate, 3); //TIME TO 3 DP
+    p(i/oldSampleRate, 3); //TIME TO 3 DP
     p(",\t");
     p(tempBuffer[(N_index - samplescount + i + N_tBuffer) % N_tBuffer], 3);
     p(",\t\t");
@@ -297,7 +299,7 @@ void send_data_to_pc(float* dft) {
   }
   P();
   p("Mode: "); P(mode);
-  p("SAMPLE_RATE: ");P(sampleRate);
+  p("SAMPLE_RATE: ");P(oldSampleRate);
   P("---END OF DATA TRANSMISSION---");
   return;
 }
